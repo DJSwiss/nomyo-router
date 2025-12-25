@@ -17,6 +17,10 @@ from starlette.responses import StreamingResponse, JSONResponse, Response, HTMLR
 from pydantic import Field
 from pydantic_settings import BaseSettings
 from collections import defaultdict
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # ------------------------------------------------------------------
 # In‑memory caches
@@ -283,9 +287,9 @@ class rechunk:
                 done=True,
                 done_reason='stop',
                 total_duration=int((time.perf_counter() - start_ts) * 1_000_000_000),
-                load_duration=100000, 
+                load_duration=100000,
                 prompt_eval_count=int(chunk.usage.prompt_tokens),
-                prompt_eval_duration=int((time.perf_counter() - start_ts) * 1_000_000_000 * (chunk.usage.prompt_tokens / chunk.usage.completion_tokens / 100)), 
+                prompt_eval_duration=int((time.perf_counter() - start_ts) * 1_000_000_000 * (chunk.usage.prompt_tokens / chunk.usage.completion_tokens / 100)) if chunk.usage.completion_tokens != 0 else 0,
                 eval_count=int(chunk.usage.completion_tokens),
                 eval_duration=int((time.perf_counter() - start_ts) * 1_000_000_000),
                 message={"role": "assistant"}
@@ -664,11 +668,9 @@ async def chat_proxy(request: Request):
                 async_gen = await client.chat(model=model, messages=messages, tools=tools, stream=stream, think=think, format=_format, options=options, keep_alive=keep_alive)
             if stream == True:
                 async for chunk in async_gen:
-                    print(chunk)
                     if is_openai_endpoint:
                         chunk = rechunk.openai_chat_completion2ollama(chunk, stream, start_ts)
                     # `chunk` can be a dict or a pydantic model – dump to JSON safely
-                    print(chunk)
                     if hasattr(chunk, "model_dump_json"):
                         json_line = chunk.model_dump_json()
                     else:
