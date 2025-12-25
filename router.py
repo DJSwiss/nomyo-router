@@ -21,8 +21,13 @@ from dotenv import load_dotenv
 
 # HuggingFace integration (optional)
 try:
-    from huggingface_hub import InferenceClient, HfApi, ModelFilter
+    from huggingface_hub import InferenceClient, HfApi
     HF_AVAILABLE = True
+    # ModelFilter is optional, only needed for model discovery
+    try:
+        from huggingface_hub import ModelFilter
+    except ImportError:
+        ModelFilter = None
 except ImportError:
     HF_AVAILABLE = False
     InferenceClient = None
@@ -71,7 +76,7 @@ class Config(BaseSettings):
     api_keys: Dict[str, str] = Field(default_factory=dict)
 
     # Internal mapping for provider information
-    _endpoint_info: Dict[str, Dict[str, str]] = Field(default_factory=dict)
+    endpoint_info: Dict[str, Dict[str, str]] = Field(default_factory=dict)
 
     class Config:
         # Load from `config.yaml` first, then from env variables
@@ -123,7 +128,7 @@ class Config(BaseSettings):
                 continue  # Skip invalid entries
 
             normalized.append(url)
-            self._endpoint_info[url] = {
+            self.endpoint_info[url] = {
                 "provider": provider,
                 "url": url
             }
@@ -132,7 +137,7 @@ class Config(BaseSettings):
 
     def get_provider(self, endpoint: str) -> str:
         """Get provider type for an endpoint."""
-        return self._endpoint_info.get(endpoint, {}).get("provider", "ollama")
+        return self.endpoint_info.get(endpoint, {}).get("provider", "ollama")
 
 # Create the global config object – it will be overwritten on startup
 config = Config()
