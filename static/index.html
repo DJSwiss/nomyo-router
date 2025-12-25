@@ -367,6 +367,16 @@
                     </div>
                 </div>
 
+                <!-- Search box for models -->
+                <div style="margin: 1rem 0;">
+                    <input
+                        type="text"
+                        id="model-search"
+                        placeholder="🔍 Search models..."
+                        style="width: 100%; padding: 0.5rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px;"
+                    />
+                </div>
+
                 <!-- Endpoint selection (initially hidden) -->
                 <div id="pull-endpoints-wrapper">
                     <label style="font-weight: bold; margin-bottom: 0.5rem; display: block;">
@@ -965,6 +975,48 @@
                 window.addEventListener("beforeunload", () => source.close());
             }
 
+            /* ---------- Model Search ---------- */
+            function initModelSearch() {
+                const searchInput = document.getElementById("model-search");
+                const tagsTable = document.getElementById("tags-table");
+
+                if (searchInput && tagsTable) {
+                    searchInput.addEventListener("input", (e) => {
+                        const searchTerm = e.target.value.toLowerCase();
+                        const tbody = tagsTable.querySelector("tbody");
+                        const rows = tbody.querySelectorAll("tr");
+
+                        let visibleCount = 0;
+
+                        rows.forEach(row => {
+                            // Skip loading/error rows
+                            if (row.classList.contains("loading") || row.classList.contains("error")) {
+                                return;
+                            }
+
+                            const modelCell = row.querySelector("td.model");
+                            if (modelCell) {
+                                const modelText = modelCell.textContent.toLowerCase();
+
+                                if (modelText.includes(searchTerm)) {
+                                    row.style.display = "";
+                                    visibleCount++;
+                                } else {
+                                    row.style.display = "none";
+                                }
+                            }
+                        });
+
+                        // Update count to show filtered results
+                        const countSpan = document.getElementById("tags-count");
+                        if (countSpan && searchTerm) {
+                            const totalCount = rows.length - (tbody.querySelector(".loading") ? 1 : 0);
+                            countSpan.textContent = `${visibleCount} / ${totalCount}`;
+                        }
+                    });
+                }
+            }
+
             /* ---------- Init ---------- */
             window.addEventListener("load", () => {
                 loadEndpoints();
@@ -973,6 +1025,9 @@
                 loadUsage();
                 setInterval(loadPS, 60_000);
                 setInterval(loadEndpoints, 300_000);
+
+                // Initialize model search after a short delay to ensure table is loaded
+                setTimeout(initModelSearch, 500);
             });
         </script>
 
