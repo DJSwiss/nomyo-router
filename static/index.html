@@ -335,6 +335,147 @@
                     order: 1;
                 }
             }
+
+            /* ========== Model Search & Pull Modal ========== */
+            .search-modal-content {
+                max-width: 800px;
+                max-height: 80vh;
+                overflow-y: auto;
+            }
+
+            .search-tabs {
+                display: flex;
+                border-bottom: 2px solid #e0e0e0;
+                margin-bottom: 1rem;
+            }
+
+            .tab-btn {
+                padding: 0.75rem 1.5rem;
+                background: none;
+                border: none;
+                border-bottom: 3px solid transparent;
+                cursor: pointer;
+                font-size: 1rem;
+                transition: all 0.2s;
+            }
+
+            .tab-btn:hover {
+                background: #f5f5f5;
+            }
+
+            .tab-btn.active {
+                border-bottom-color: #4CAF50;
+                font-weight: bold;
+            }
+
+            .hw-status-panel {
+                background: #f9f9f9;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 1rem;
+                margin-bottom: 1rem;
+            }
+
+            .hw-metric {
+                display: flex;
+                justify-content: space-between;
+                padding: 0.5rem 0;
+            }
+
+            .hw-value.error {
+                color: #d32f2f;
+                font-weight: bold;
+            }
+
+            .hw-value.warning {
+                color: #f57c00;
+                font-weight: bold;
+            }
+
+            .hw-value.ok {
+                color: #388e3c;
+            }
+
+            .search-results {
+                max-height: 400px;
+                overflow-y: auto;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                margin-top: 1rem;
+            }
+
+            .result-card {
+                display: flex;
+                align-items: center;
+                padding: 0.75rem;
+                border-bottom: 1px solid #eee;
+                cursor: pointer;
+                transition: background 0.2s;
+            }
+
+            .result-card:hover {
+                background: #f5f5f5;
+            }
+
+            .result-card input[type="checkbox"] {
+                margin-right: 1rem;
+            }
+
+            .result-info {
+                flex: 1;
+            }
+
+            .result-name {
+                font-weight: bold;
+                font-size: 1.1rem;
+            }
+
+            .result-desc {
+                color: #666;
+                font-size: 0.9rem;
+                margin-top: 0.25rem;
+            }
+
+            .result-meta {
+                font-size: 0.85rem;
+                color: #999;
+                margin-top: 0.25rem;
+            }
+
+            .compatibility-indicator {
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+            }
+
+            .compat-badge {
+                padding: 0.25rem 0.5rem;
+                border-radius: 3px;
+                font-size: 0.85rem;
+                font-weight: bold;
+            }
+
+            .compat-badge.ok {
+                background: #c8e6c9;
+                color: #2e7d32;
+            }
+
+            .compat-badge.warning {
+                background: #ffe0b2;
+                color: #e65100;
+            }
+
+            .compat-badge.error {
+                background: #ffcdd2;
+                color: #c62828;
+            }
+
+            .search-actions {
+                display: flex;
+                gap: 0.5rem;
+                margin-top: 1rem;
+                justify-content: flex-end;
+            }
         </style>
     </head>
     <body>
@@ -363,6 +504,7 @@
                         />
                         <button id="pull-btn">Pull</button>
                         <button id="pull-config-btn" style="margin-left: 0.25rem;">Configure</button>
+                        <button id="search-pull-btn" style="margin-left: 0.5rem;">🔍 Search & Pull</button>
                         <span id="pull-status"></span>
                     </div>
                 </div>
@@ -1017,6 +1159,189 @@
                 }
             }
 
+            /* ---------- Model Search & Pull ---------- */
+            let currentSearchTab = "ollama";
+            let hardwareStats = null;
+
+            // Open search modal
+            document.getElementById("search-pull-btn").addEventListener("click", () => {
+                document.getElementById("search-modal").style.display = "flex";
+                loadHardwareStatus();
+                searchModels("");  // Load initial results
+            });
+
+            // Tab switching
+            document.querySelectorAll(".tab-btn").forEach(btn => {
+                btn.addEventListener("click", (e) => {
+                    document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
+                    e.target.classList.add("active");
+                    currentSearchTab = e.target.dataset.tab;
+                    searchModels(document.getElementById("model-search-input").value);
+                });
+            });
+
+            // Search input
+            let searchTimeout;
+            document.getElementById("model-search-input").addEventListener("input", (e) => {
+                clearTimeout(searchTimeout);
+                searchTimeout = setTimeout(() => {
+                    searchModels(e.target.value);
+                }, 300);
+            });
+
+            // Load hardware status
+            async function loadHardwareStatus() {
+                try {
+                    const data = await fetchJSON("/api/hardware");
+                    hardwareStats = data;
+
+                    // Update UI
+                    const diskEl = document.getElementById("hw-disk");
+                    const ramEl = document.getElementById("hw-ram");
+                    const cpuEl = document.getElementById("hw-cpu");
+
+                    // Disk
+                    diskEl.textContent = `${data.disk.available_gb}GB / ${data.disk.total_gb}GB (${100 - data.disk.used_percent}% free)`;
+                    if (data.disk.available_gb < 0.1) {
+                        diskEl.className = "hw-value error";
+                    } else if (data.disk.available_gb < 2.0) {
+                        diskEl.className = "hw-value warning";
+                    } else {
+                        diskEl.className = "hw-value ok";
+                    }
+
+                    // RAM
+                    ramEl.textContent = `${data.ram.available_gb}GB / ${data.ram.total_gb}GB`;
+                    if (data.ram.available_gb < 2.0) {
+                        ramEl.className = "hw-value error";
+                    } else if (data.ram.available_gb < 4.0) {
+                        ramEl.className = "hw-value warning";
+                    } else {
+                        ramEl.className = "hw-value ok";
+                    }
+
+                    // CPU
+                    cpuEl.textContent = `${data.cpu.cores} cores`;
+                    cpuEl.className = data.cpu.cores >= 4 ? "hw-value ok" : "hw-value warning";
+
+                } catch (e) {
+                    console.error("Failed to load hardware status:", e);
+                }
+            }
+
+            // Search models
+            async function searchModels(query) {
+                const resultsDiv = document.getElementById("search-results");
+                resultsDiv.innerHTML = '<div style="padding: 2rem; text-align: center;">Searching...</div>';
+
+                try {
+                    let data;
+                    if (currentSearchTab === "ollama") {
+                        data = await fetchJSON(`/api/search/ollama?query=${encodeURIComponent(query)}&limit=20`);
+                    } else {
+                        data = await fetchJSON(`/api/search/hf?query=${encodeURIComponent(query)}&limit=20`);
+                    }
+
+                    if (!data.models || data.models.length === 0) {
+                        resultsDiv.innerHTML = '<div style="padding: 2rem; text-align: center; color: #999;">No models found</div>';
+                        return;
+                    }
+
+                    // Render results
+                    resultsDiv.innerHTML = data.models.map(model => {
+                        if (currentSearchTab === "ollama") {
+                            const compat = model.compatibility || {};
+                            const compatClass = compat.status || "ok";
+                            const compatText = compat.compatible === false ? "Blocked" :
+                                               compat.status === "warning" ? "Warning" : "OK";
+                            const disabled = compat.compatible === false ? "disabled" : "";
+
+                            return `
+                                <div class="result-card">
+                                    <input type="checkbox" class="model-checkbox" data-model="${model.name}" ${disabled}>
+                                    <div class="result-info">
+                                        <div class="result-name">${model.name}</div>
+                                        <div class="result-desc">${model.description}</div>
+                                        <div class="result-meta">
+                                            ${model.size_gb}GB • ${model.parameter_count} • ${model.tags.join(", ")}
+                                        </div>
+                                    </div>
+                                    <div class="compatibility-indicator">
+                                        <span class="compat-badge ${compatClass}">${compatText}</span>
+                                    </div>
+                                </div>
+                            `;
+                        } else {
+                            // HuggingFace
+                            return `
+                                <div class="result-card">
+                                    <input type="checkbox" class="model-checkbox" data-model="${model.id}">
+                                    <div class="result-info">
+                                        <div class="result-name">${model.id}</div>
+                                        <div class="result-desc">${model.description || "No description"}</div>
+                                        <div class="result-meta">
+                                            ⬇️ ${(model.downloads / 1000).toFixed(0)}K downloads • ❤️ ${model.likes} likes • ${model.pipeline_tag}
+                                        </div>
+                                    </div>
+                                    <div class="compatibility-indicator">
+                                        <span class="compat-badge ok">Inference API</span>
+                                    </div>
+                                </div>
+                            `;
+                        }
+                    }).join("");
+
+                    // Update pull button state
+                    updatePullButtonState();
+
+                    // Add checkbox listeners
+                    document.querySelectorAll(".model-checkbox").forEach(cb => {
+                        cb.addEventListener("change", updatePullButtonState);
+                    });
+
+                } catch (e) {
+                    console.error("Search failed:", e);
+                    resultsDiv.innerHTML = `<div style="padding: 2rem; text-align: center; color: #d32f2f;">Search failed: ${e.message}</div>`;
+                }
+            }
+
+            // Update pull button state
+            function updatePullButtonState() {
+                const checkedBoxes = document.querySelectorAll(".model-checkbox:checked");
+                const pullBtn = document.getElementById("pull-selected-btn");
+
+                if (checkedBoxes.length > 0) {
+                    pullBtn.disabled = false;
+                    pullBtn.textContent = `Pull ${checkedBoxes.length} Model(s)`;
+                } else {
+                    pullBtn.disabled = true;
+                    pullBtn.textContent = "Pull Selected";
+                }
+            }
+
+            // Pull selected models
+            document.getElementById("pull-selected-btn").addEventListener("click", () => {
+                const checkedBoxes = document.querySelectorAll(".model-checkbox:checked");
+                const modelNames = Array.from(checkedBoxes).map(cb => cb.dataset.model);
+
+                if (modelNames.length === 0) return;
+
+                // Close search modal
+                document.getElementById("search-modal").style.display = "none";
+
+                // For Ollama models, use existing pull functionality
+                if (currentSearchTab === "ollama") {
+                    // Pull first model (existing pull modal only supports one at a time)
+                    document.getElementById("pull-model-input").value = modelNames[0];
+                    document.getElementById("pull-btn").click();
+
+                    // TODO: Queue remaining models or enhance pull modal for batch
+                } else {
+                    // For HuggingFace, just show info (no pull needed - uses Inference API)
+                    alert(`HuggingFace models don't need to be pulled.\n\nYou can use them directly via the Inference API:\n${modelNames.join("\n")}`);
+                }
+            });
+
             /* ---------- Init ---------- */
             window.addEventListener("load", () => {
                 loadEndpoints();
@@ -1050,6 +1375,60 @@
                 <div class="pull-control-buttons">
                     <button class="pull-cancel-btn" id="pull-cancel-btn">Cancel</button>
                     <button class="pull-restart-btn" id="pull-restart-btn">Restart</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Search & Pull Modal -->
+        <div id="search-modal" class="modal">
+            <div class="modal-content search-modal-content">
+                <span class="close-btn" onclick="document.getElementById('search-modal').style.display='none'">&times;</span>
+                <h2>Search & Pull Models</h2>
+
+                <!-- Tabs -->
+                <div class="search-tabs">
+                    <button class="tab-btn active" data-tab="ollama">Ollama</button>
+                    <button class="tab-btn" data-tab="hf">HuggingFace</button>
+                </div>
+
+                <!-- Hardware Status Panel -->
+                <div class="hw-status-panel">
+                    <h3 style="margin-top: 0;">Hardware Status</h3>
+                    <div class="hw-metric">
+                        <span>💾 Disk Space:</span>
+                        <span id="hw-disk" class="hw-value">Loading...</span>
+                    </div>
+                    <div class="hw-metric">
+                        <span>🧠 RAM Available:</span>
+                        <span id="hw-ram" class="hw-value">Loading...</span>
+                    </div>
+                    <div class="hw-metric">
+                        <span>⚙️ CPU Cores:</span>
+                        <span id="hw-cpu" class="hw-value">Loading...</span>
+                    </div>
+                </div>
+
+                <!-- Search Input -->
+                <div style="margin-bottom: 1rem;">
+                    <input
+                        type="text"
+                        id="model-search-input"
+                        placeholder="Search models..."
+                        style="width: 100%; padding: 0.75rem; font-size: 1rem; border: 1px solid #ccc; border-radius: 4px;"
+                    />
+                </div>
+
+                <!-- Results -->
+                <div class="search-results" id="search-results">
+                    <div style="padding: 2rem; text-align: center; color: #999;">
+                        Enter a search term or browse all models
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="search-actions">
+                    <button onclick="document.getElementById('search-modal').style.display='none'">Cancel</button>
+                    <button id="pull-selected-btn" disabled>Pull Selected</button>
                 </div>
             </div>
         </div>

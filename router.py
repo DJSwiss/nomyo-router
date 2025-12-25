@@ -14,7 +14,7 @@ from fastapi_sse import sse_handler
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse, JSONResponse, Response, HTMLResponse, RedirectResponse
-from pydantic import Field
+from pydantic import Field, BaseModel
 from pydantic_settings import BaseSettings
 from collections import defaultdict
 from dotenv import load_dotenv
@@ -45,6 +45,13 @@ _models_cache: dict[str, tuple[Set[str], float]] = {}
 # Transient errors are cached for 1s – the key stays until the
 # timeout expires, after which the endpoint will be queried again.
 _error_cache: dict[str, float] = {}
+
+# Hardware stats cache
+_hardware_cache: Dict[str, any] = {
+    "stats": None,
+    "cached_at": 0,
+    "ttl": 60  # Cache for 60 seconds
+}
 
 # ------------------------------------------------------------------
 # SSE Queues
@@ -553,6 +560,194 @@ def messages_to_prompt(messages: list) -> str:
 
     prompt_parts.append("Assistant:")
     return "\n\n".join(prompt_parts)
+
+# ------------------------------------------------------------------
+# Hardware Detection & Compatibility Check
+# ------------------------------------------------------------------
+class HardwareStats(BaseModel):
+    ram_total_gb: float
+    ram_available_gb: float
+    ram_used_percent: float
+    disk_total_gb: float
+    disk_available_gb: float
+    disk_used_percent: float
+    cpu_cores: int
+    gpu_available: bool
+    platform: str
+
+async def get_hardware_stats() -> HardwareStats:
+    """Get system hardware stats with caching."""
+    import time
+
+    # Check cache
+    if (_hardware_cache["stats"] is not None and
+        time.time() - _hardware_cache["cached_at"] < _hardware_cache["ttl"]):
+        return _hardware_cache["stats"]
+
+    # Read /proc/meminfo for RAM
+    with open("/proc/meminfo", "r") as f:
+        meminfo = f.read()
+        mem_total_kb = int([l for l in meminfo.split("\n") if "MemTotal" in l][0].split()[1])
+        mem_available_kb = int([l for l in meminfo.split("\n") if "MemAvailable" in l][0].split()[1])
+
+    # Get disk stats
+    import os
+    stat = os.statvfs("/")
+    disk_total_bytes = stat.f_blocks * stat.f_frsize
+    disk_available_bytes = stat.f_bavail * stat.f_frsize
+
+    # Build stats object
+    stats = HardwareStats(
+        ram_total_gb=round(mem_total_kb / 1024 / 1024, 1),
+        ram_available_gb=round(mem_available_kb / 1024 / 1024, 1),
+        ram_used_percent=round((1 - mem_available_kb / mem_total_kb) * 100),
+        disk_total_gb=round(disk_total_bytes / 1024 / 1024 / 1024, 1),
+        disk_available_gb=round(disk_available_bytes / 1024 / 1024 / 1024, 2),
+        disk_used_percent=round((1 - stat.f_bavail / stat.f_blocks) * 100),
+        cpu_cores=os.cpu_count() or 0,
+        gpu_available=False,  # No GPU on Android/Termux
+        platform="android"
+    )
+
+    # Cache and return
+    _hardware_cache["stats"] = stats
+    _hardware_cache["cached_at"] = time.time()
+
+    return stats
+
+def estimate_ollama_model_size(model_name: str) -> float:
+    """Estimate model size from name (e.g., 'llama3:8b' -> 4.7GB)."""
+    size_map = {
+        "2b": {"q4_0": 1.4, "q4_k_m": 1.5, "q5_0": 1.6},
+        "3b": {"q4_0": 2.0, "q4_k_m": 2.1},
+        "7b": {"q4_0": 3.8, "q4_k_m": 4.1, "q5_0": 4.5},
+        "8b": {"q4_0": 4.7, "q4_k_m": 5.0},
+        "13b": {"q4_0": 7.4, "q4_k_m": 7.9},
+        "70b": {"q4_0": 39.0, "q4_k_m": 42.0}
+    }
+
+    # Parse model name
+    name_lower = model_name.lower()
+
+    # Find parameter size (2b, 3b, 7b, etc.)
+    param_size = None
+    for size in size_map.keys():
+        if size in name_lower:
+            param_size = size
+            break
+
+    if not param_size:
+        return 5.0  # Default: assume 7b model
+
+    # Assume Q4_0 quantization if not specified
+    return size_map[param_size].get("q4_0", 5.0)
+
+async def check_model_compatibility(model_name: str, provider: str) -> dict:
+    """Check if model is compatible with current hardware."""
+    hw = await get_hardware_stats()
+
+    if provider == "huggingface":
+        # HF Inference API - no local requirements
+        return {
+            "compatible": True,
+            "status": "ok",
+            "checks": {
+                "disk_space": {"status": "ok", "message": "No local storage needed"},
+                "ram": {"status": "ok", "message": "Runs on HF servers"},
+                "cpu": {"status": "ok", "message": "Runs on HF servers"}
+            },
+            "recommendations": []
+        }
+
+    # Ollama model - estimate size and check
+    model_size_gb = estimate_ollama_model_size(model_name)
+
+    checks = {}
+    recommendations = []
+    compatible = True
+    overall_status = "ok"
+
+    # Disk space check
+    required_disk = model_size_gb + 0.5  # Model + 500MB buffer
+    if hw.disk_available_gb < required_disk:
+        checks["disk_space"] = {
+            "required_gb": model_size_gb,
+            "available_gb": hw.disk_available_gb,
+            "status": "error",
+            "message": f"Insufficient disk space. Need {model_size_gb}GB, have {hw.disk_available_gb}GB"
+        }
+        compatible = False
+        overall_status = "error"
+        recommendations.append(f"Free up at least {required_disk:.1f}GB disk space")
+    elif hw.disk_available_gb < (model_size_gb + 2.0):
+        checks["disk_space"] = {
+            "required_gb": model_size_gb,
+            "available_gb": hw.disk_available_gb,
+            "status": "warning",
+            "message": f"Low disk space. Only {hw.disk_available_gb}GB available"
+        }
+        if overall_status == "ok":
+            overall_status = "warning"
+    else:
+        checks["disk_space"] = {
+            "status": "ok",
+            "message": f"{hw.disk_available_gb}GB available"
+        }
+
+    # RAM check
+    required_ram = model_size_gb
+    if hw.ram_available_gb < required_ram:
+        checks["ram"] = {
+            "required_gb": required_ram,
+            "available_gb": hw.ram_available_gb,
+            "status": "error",
+            "message": f"Insufficient RAM. Need {required_ram}GB, have {hw.ram_available_gb}GB"
+        }
+        compatible = False
+        overall_status = "error"
+        recommendations.append(f"Need at least {required_ram}GB RAM")
+    elif hw.ram_available_gb < (required_ram * 1.5):
+        checks["ram"] = {
+            "required_gb": required_ram,
+            "available_gb": hw.ram_available_gb,
+            "status": "warning",
+            "message": "RAM borderline for large contexts"
+        }
+        if overall_status == "ok":
+            overall_status = "warning"
+    else:
+        checks["ram"] = {
+            "status": "ok",
+            "message": f"{hw.ram_available_gb}GB available"
+        }
+
+    # CPU check
+    if hw.cpu_cores < 4:
+        checks["cpu"] = {
+            "status": "warning",
+            "message": f"Only {hw.cpu_cores} cores - inference may be slow"
+        }
+        if overall_status == "ok":
+            overall_status = "warning"
+    else:
+        checks["cpu"] = {
+            "status": "ok",
+            "message": f"{hw.cpu_cores} cores sufficient"
+        }
+
+    # Add recommendations for smaller models if incompatible
+    if not compatible:
+        if model_size_gb > 4.0:
+            recommendations.append("Consider phi3:mini (2.3GB) or gemma:2b (1.4GB) instead")
+        elif model_size_gb > 2.0:
+            recommendations.append("Consider gemma:2b (1.4GB) instead")
+
+    return {
+        "compatible": compatible,
+        "status": overall_status,
+        "checks": checks,
+        "recommendations": recommendations
+    }
 
 # ------------------------------------------------------------------
 # SSE Helpser
@@ -1995,7 +2190,127 @@ async def usage_stream(request: Request):
     return StreamingResponse(event_generator(), media_type="text/event-stream")
 
 # -------------------------------------------------------------
-# 28. FastAPI startup/shutdown events
+# 28. Hardware & Model Search Endpoints
+# -------------------------------------------------------------
+@app.get("/api/hardware")
+async def get_hardware():
+    """Get current hardware stats."""
+    stats = await get_hardware_stats()
+    return {
+        "ram": {
+            "total_gb": stats.ram_total_gb,
+            "available_gb": stats.ram_available_gb,
+            "used_percent": stats.ram_used_percent
+        },
+        "disk": {
+            "total_gb": stats.disk_total_gb,
+            "available_gb": stats.disk_available_gb,
+            "used_percent": stats.disk_used_percent
+        },
+        "cpu": {
+            "cores": stats.cpu_cores,
+            "gpu": stats.gpu_available
+        },
+        "platform": stats.platform
+    }
+
+@app.post("/api/check-compatibility")
+async def check_compatibility(request: Request):
+    """Check if a model is compatible with current hardware."""
+    body = await request.json()
+    model_name = body.get("model_name")
+    provider = body.get("provider", "ollama")
+
+    if not model_name:
+        raise HTTPException(status_code=400, detail="model_name required")
+
+    result = await check_model_compatibility(model_name, provider)
+    return result
+
+@app.get("/api/search/ollama")
+async def search_ollama_models(query: str = "", limit: int = 20):
+    """Search curated Ollama models."""
+    import json
+    from pathlib import Path
+
+    # Load curated models list
+    models_file = Path(__file__).parent / "data" / "ollama_models.json"
+
+    if not models_file.exists():
+        return {"models": [], "error": "Models list not found"}
+
+    with open(models_file, "r") as f:
+        data = json.load(f)
+        all_models = data.get("models", [])
+
+    # Filter by query
+    query_lower = query.lower()
+    if query:
+        filtered = [
+            m for m in all_models
+            if query_lower in m["name"].lower() or
+               query_lower in m["description"].lower() or
+               any(query_lower in tag for tag in m.get("tags", []))
+        ]
+    else:
+        filtered = all_models[:limit]
+
+    # Add compatibility info
+    for model in filtered[:limit]:
+        compat = await check_model_compatibility(model["name"], "ollama")
+        model["compatibility"] = {
+            "status": compat["status"],
+            "compatible": compat["compatible"],
+            "message": compat["checks"].get("disk_space", {}).get("message", "")
+        }
+
+    return {"models": filtered[:limit], "total": len(filtered)}
+
+@app.get("/api/search/hf")
+async def search_hf_models(query: str = "", task: str = "text-generation", limit: int = 20):
+    """Search HuggingFace models."""
+    if not HF_AVAILABLE or HfApi is None:
+        return {"models": [], "error": "HuggingFace integration not available"}
+
+    try:
+        api = HfApi()
+
+        # Search models
+        models = api.list_models(
+            search=query if query else None,
+            task=task if task else None,
+            limit=limit,
+            sort="downloads",
+            direction=-1
+        )
+
+        # Filter for inference API compatible
+        results = []
+        for model in models:
+            if hasattr(model, 'pipeline_tag') and model.pipeline_tag:
+                # Safely get description from card_data
+                description = ""
+                if hasattr(model, 'card_data') and model.card_data:
+                    if isinstance(model.card_data, dict):
+                        description = model.card_data.get('description', '')
+
+                results.append({
+                    "id": model.id,
+                    "author": model.author or "unknown",
+                    "downloads": getattr(model, 'downloads', 0),
+                    "likes": getattr(model, 'likes', 0),
+                    "pipeline_tag": model.pipeline_tag,
+                    "inference_api": True,
+                    "description": description
+                })
+
+        return {"models": results[:limit], "total": len(results)}
+
+    except Exception as e:
+        return {"models": [], "error": str(e)}
+
+# -------------------------------------------------------------
+# 29. FastAPI startup/shutdown events
 # -------------------------------------------------------------
 @app.on_event("startup")
 async def startup_event() -> None:

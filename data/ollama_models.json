@@ -1,0 +1,229 @@
+{
+  "models": [
+    {
+      "name": "gemma:2b",
+      "description": "Google Gemma 2B - Ultra-lightweight model, great for mobile and low-resource devices",
+      "size_gb": 1.4,
+      "parameter_count": "2B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "tiny", "fast", "mobile"],
+      "popularity_rank": 1
+    },
+    {
+      "name": "phi3:mini",
+      "description": "Microsoft Phi-3 Mini - Excellent small model for code and chat, high quality",
+      "size_gb": 2.3,
+      "parameter_count": "3.8B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "code", "small", "efficient"],
+      "popularity_rank": 2
+    },
+    {
+      "name": "llama3.2:3b",
+      "description": "Meta's Llama 3.2 3B - Smallest Llama variant, multilingual support",
+      "size_gb": 2.0,
+      "parameter_count": "3B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "fast", "instruct", "multilingual"],
+      "popularity_rank": 3
+    },
+    {
+      "name": "qwen2.5:3b",
+      "description": "Qwen 2.5 3B - Alibaba's efficient small model, great for Asian languages",
+      "size_gb": 2.2,
+      "parameter_count": "3B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "multilingual", "asian-languages", "small"],
+      "popularity_rank": 4
+    },
+    {
+      "name": "mistral:7b",
+      "description": "Mistral 7B - Great all-around performance, very popular for general tasks",
+      "size_gb": 4.1,
+      "parameter_count": "7B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "code", "popular", "versatile"],
+      "popularity_rank": 5
+    },
+    {
+      "name": "llama3:8b",
+      "description": "Meta's Llama 3 8B - Powerful instruction following, excellent reasoning",
+      "size_gb": 4.7,
+      "parameter_count": "8B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "instruct", "popular", "reasoning"],
+      "popularity_rank": 6
+    },
+    {
+      "name": "neural-chat:7b",
+      "description": "Intel's Neural Chat 7B - Fine-tuned for conversational use",
+      "size_gb": 4.1,
+      "parameter_count": "7B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "conversation", "friendly"],
+      "popularity_rank": 7
+    },
+    {
+      "name": "codellama:7b",
+      "description": "Meta's Code Llama 7B - Specialized for code generation and debugging",
+      "size_gb": 3.8,
+      "parameter_count": "7B",
+      "quantization": "Q4_0",
+      "tags": ["code", "programming", "debugging"],
+      "popularity_rank": 8
+    },
+    {
+      "name": "nomic-embed-text",
+      "description": "Nomic Embed Text - High-quality text embeddings for semantic search",
+      "size_gb": 0.27,
+      "parameter_count": "137M",
+      "quantization": "F16",
+      "tags": ["embeddings", "search", "tiny"],
+      "popularity_rank": 9
+    },
+    {
+      "name": "tinyllama:1b",
+      "description": "Tiny Llama 1.1B - Smallest useful model, great for testing",
+      "size_gb": 0.64,
+      "parameter_count": "1.1B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "tiny", "fast", "test"],
+      "popularity_rank": 10
+    },
+    {
+      "name": "gemma2:9b",
+      "description": "Google Gemma 2 9B - Second generation, improved performance",
+      "size_gb": 5.4,
+      "parameter_count": "9B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "advanced", "google"],
+      "popularity_rank": 11
+    },
+    {
+      "name": "deepseek-coder:6.7b",
+      "description": "DeepSeek Coder 6.7B - Specialized coding assistant, great at multiple languages",
+      "size_gb": 3.8,
+      "parameter_count": "6.7B",
+      "quantization": "Q4_0",
+      "tags": ["code", "programming", "multilingual-code"],
+      "popularity_rank": 12
+    },
+    {
+      "name": "vicuna:7b",
+      "description": "Vicuna 7B - ChatGPT-style model, trained on user conversations",
+      "size_gb": 3.8,
+      "parameter_count": "7B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "assistant", "conversational"],
+      "popularity_rank": 13
+    },
+    {
+      "name": "orca-mini:3b",
+      "description": "Orca Mini 3B - Reasoning-focused small model from Microsoft",
+      "size_gb": 1.9,
+      "parameter_count": "3B",
+      "quantization": "Q4_0",
+      "tags": ["reasoning", "small", "efficient"],
+      "popularity_rank": 14
+    },
+    {
+      "name": "starling-lm:7b",
+      "description": "Starling LM 7B - RLAIF trained model, great for helpful responses",
+      "size_gb": 4.1,
+      "parameter_count": "7B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "helpful", "assistant"],
+      "popularity_rank": 15
+    },
+    {
+      "name": "sqlcoder:7b",
+      "description": "SQLCoder 7B - Specialized for SQL query generation from natural language",
+      "size_gb": 4.1,
+      "parameter_count": "7B",
+      "quantization": "Q4_0",
+      "tags": ["sql", "database", "query"],
+      "popularity_rank": 16
+    },
+    {
+      "name": "llama3.1:8b",
+      "description": "Meta's Llama 3.1 8B - Updated version with longer context (128K tokens)",
+      "size_gb": 4.7,
+      "parameter_count": "8B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "instruct", "long-context"],
+      "popularity_rank": 17
+    },
+    {
+      "name": "mixtral:8x7b",
+      "description": "Mistral's Mixtral 8x7B - Mixture of Experts, high performance (WARNING: Large)",
+      "size_gb": 26.4,
+      "parameter_count": "47B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "advanced", "moe", "large"],
+      "popularity_rank": 18
+    },
+    {
+      "name": "llama3:70b",
+      "description": "Meta's Llama 3 70B - Very powerful, state-of-the-art (WARNING: Very Large)",
+      "size_gb": 39.0,
+      "parameter_count": "70B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "advanced", "powerful", "very-large"],
+      "popularity_rank": 19
+    },
+    {
+      "name": "wizard-vicuna-uncensored:7b",
+      "description": "Wizard Vicuna Uncensored 7B - Uncensored responses, use responsibly",
+      "size_gb": 3.8,
+      "parameter_count": "7B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "uncensored", "creative"],
+      "popularity_rank": 20
+    },
+    {
+      "name": "dolphin-mixtral:8x7b",
+      "description": "Dolphin Mixtral 8x7B - Uncensored MoE model (WARNING: Large)",
+      "size_gb": 26.4,
+      "parameter_count": "47B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "uncensored", "moe", "large"],
+      "popularity_rank": 21
+    },
+    {
+      "name": "mistral-openorca:7b",
+      "description": "Mistral OpenOrca 7B - Mistral fine-tuned on Orca dataset",
+      "size_gb": 4.1,
+      "parameter_count": "7B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "reasoning", "helpful"],
+      "popularity_rank": 22
+    },
+    {
+      "name": "nous-hermes2:10.7b",
+      "description": "Nous Hermes 2 10.7B - High-quality general purpose model",
+      "size_gb": 6.5,
+      "parameter_count": "10.7B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "versatile", "quality"],
+      "popularity_rank": 23
+    },
+    {
+      "name": "zephyr:7b",
+      "description": "Zephyr 7B - HuggingFace's Mistral fine-tune, great for chatbots",
+      "size_gb": 4.1,
+      "parameter_count": "7B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "chatbot", "assistant"],
+      "popularity_rank": 24
+    },
+    {
+      "name": "openhermes:7b",
+      "description": "OpenHermes 7B - General purpose assistant, well-rounded",
+      "size_gb": 4.1,
+      "parameter_count": "7B",
+      "quantization": "Q4_0",
+      "tags": ["chat", "assistant", "general"],
+      "popularity_rank": 25
+    }
+  ]
+}
