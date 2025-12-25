@@ -1,20 +1,33 @@
 # config.yaml
 endpoints:
+  # Ollama endpoints (local)
   - http://192.168.10.172:11435
   - http://127.0.0.1:11434
 #  - http://192.168.0.52:11434
+
+  # OpenAI-compatible endpoints
  # - https://api.openai.com/v1
   - https://openrouter.ai/api/v1
+
+  # HuggingFace Inference API (uncomment to enable)
+  # - url: https://api-inference.huggingface.co
+  #   provider: huggingface
+
+  # Text Generation Inference server (local or remote, uncomment to enable)
+  # - url: http://localhost:8080
+  #   provider: tgi
 
 # Maximum concurrent connections *per endpoint‑model pair* (equals to OLLAMA_NUM_PARALLEL)
 max_concurrent_connections: 2
 
 # API keys for remote endpoints
-# Set an environment variable like OPENAI_KEY
-# Confirm endpoints are exactly as in endpoints block
+# Use environment variables for security (loaded from .env file)
+# Confirm endpoint URLs match exactly with those in endpoints block
 api_keys:
   "http://192.168.10.172:11435": "ollama"
   "http://127.0.0.1:11434": "ollama"
   #"http://192.168.0.52:11434": "ollama"
   #"https://api.openai.com/v1": "${OPENAI_KEY}"
   "https://openrouter.ai/api/v1": "${OPENROUTER_API_KEY}"
+  #"https://api-inference.huggingface.co": "${HF_API_KEY}"
+  #"http://localhost:8080": "none"  # TGI usually doesn't need auth

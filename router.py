@@ -710,15 +710,43 @@ async def proxy(request: Request):
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
 
-    
+
     endpoint = await choose_endpoint(model)
-    is_openai_endpoint = "/v1" in endpoint
-    if is_openai_endpoint:
-        if ":latest" in model:
-            model = model.split(":latest")
-            model = model[0]
+    provider = get_provider(endpoint)
+
+    hf_client = None
+    oclient = None
+    client = None
+
+    if provider == "huggingface":
+        if not HF_AVAILABLE:
+            raise HTTPException(status_code=500, detail="HuggingFace support not available. Install huggingface_hub.")
+
+        # HuggingFace Inference API
+        api_key = config.api_keys.get(endpoint, "")
+        hf_client = InferenceClient(token=api_key)
+
         params = {
-            "prompt": prompt, 
+            "model": model,
+            "prompt": prompt,
+            "stream": stream if stream is not None else False,
+        }
+
+        # Optional parameters
+        if options:
+            if "temperature" in options:
+                params["temperature"] = options["temperature"]
+            if "num_predict" in options:
+                params["max_new_tokens"] = options["num_predict"]
+            if "top_p" in options:
+                params["top_p"] = options["top_p"]
+
+    elif provider in ["openai", "tgi"]:
+        if ":latest" in model:
+            model = model.split(":latest")[0]
+
+        params = {
+            "prompt": prompt,
             "model": model,
         }
 
@@ -731,42 +759,50 @@ async def proxy(request: Request):
             "stop": options.get("stop") if options and "stop" in options else None,
             "top_p": options.get("top_p") if options and "top_p" in options else None,
             "temperature": options.get("temperature") if options and "temperature" in options else None,
-            "sufix": suffix,
-            }
+            "suffix": suffix,
+        }
         params.update({k: v for k, v in optional_params.items() if v is not None})
         oclient = openai.AsyncOpenAI(base_url=endpoint, default_headers=default_headers, api_key=config.api_keys[endpoint])
-    else:
+
+    else:  # ollama
         client = ollama.AsyncClient(host=endpoint)
+
     await increment_usage(endpoint, model)
 
     # 4. Async generator that streams data and decrements the counter
     async def stream_generate_response():
         try:
-            if is_openai_endpoint:
+            if provider == "huggingface":
+                start_ts = time.perf_counter()
+                async_gen = hf_client.text_generation(**params, details=True)
+            elif provider in ["openai", "tgi"]:
                 start_ts = time.perf_counter()
                 async_gen = await oclient.completions.create(**params)
-            else:
+            else:  # ollama
                 async_gen = await client.generate(model=model, prompt=prompt, suffix=suffix, system=system, template=template, context=context, stream=stream, think=think, raw=raw, format=_format, images=images, options=options, keep_alive=keep_alive)
-            if stream == True:
+
+            if stream:
                 async for chunk in async_gen:
-                    if is_openai_endpoint:
+                    if provider == "huggingface":
+                        chunk = rechunk.hf_generate2ollama(chunk, stream, start_ts, model)
+                    elif provider in ["openai", "tgi"]:
                         chunk = rechunk.openai_completion2ollama(chunk, stream, start_ts)
+
                     if hasattr(chunk, "model_dump_json"):
                         json_line = chunk.model_dump_json()
                     else:
                         json_line = json.dumps(chunk)
                     yield json_line.encode("utf-8") + b"\n"
             else:
-                if is_openai_endpoint:
+                if provider == "huggingface":
+                    response = rechunk.hf_generate2ollama(async_gen, stream, start_ts, model)
+                    json_line = response.model_dump_json()
+                elif provider in ["openai", "tgi"]:
                     response = rechunk.openai_completion2ollama(async_gen, stream, start_ts)
-                    response = response.model_dump_json()
-                else:
-                    response = async_gen.model_dump_json()
-                json_line = (
-                    response
-                    if hasattr(async_gen, "model_dump_json")
-                    else json.dumps(async_gen)
-                )
+                    json_line = response.model_dump_json()
+                else:  # ollama
+                    json_line = async_gen.model_dump_json()
+
                 yield json_line.encode("utf-8") + b"\n"
 
         finally:
@@ -1027,29 +1063,55 @@ async def embed_proxy(request: Request):
 
     # 2. Endpoint logic
     endpoint = await choose_endpoint(model)
-    is_openai_endpoint = "/v1" in endpoint
-    if is_openai_endpoint:
+    provider = get_provider(endpoint)
+
+    if provider == "huggingface":
+        if not HF_AVAILABLE:
+            raise HTTPException(status_code=500, detail="HuggingFace support not available. Install huggingface_hub.")
+
+        api_key = config.api_keys.get(endpoint, "")
+        hf_client = InferenceClient(token=api_key)
+        oclient = None
+        client = None
+
+    elif provider in ["openai", "tgi"]:
         if ":latest" in model:
-            model = model.split(":latest")
-            model = model[0]
-        client = openai.AsyncOpenAI(base_url=endpoint, api_key=config.api_keys[endpoint])
-    else:
+            model = model.split(":latest")[0]
+        oclient = openai.AsyncOpenAI(base_url=endpoint, api_key=config.api_keys[endpoint])
+        hf_client = None
+        client = None
+
+    else:  # ollama
         client = ollama.AsyncClient(host=endpoint)
+        hf_client = None
+        oclient = None
+
     await increment_usage(endpoint, model)
+
     # 3. Async generator that streams embed data and decrements the counter
     async def stream_embedding_response():
         try:
-            # The chat method returns a generator of dicts (or GenerateResponse)
-            if is_openai_endpoint:
-                async_gen = await client.embeddings.create(input=_input, model=model)
+            if provider == "huggingface":
+                # HF feature extraction
+                embedding = await hf_client.feature_extraction(
+                    text=_input,
+                    model=model
+                )
+                async_gen = rechunk.hf_embeddings2ollama(embedding, model)
+
+            elif provider in ["openai", "tgi"]:
+                async_gen = await oclient.embeddings.create(input=_input, model=model)
                 async_gen = rechunk.openai_embed2ollama(async_gen, model)
-            else:
+
+            else:  # ollama
                 async_gen = await client.embed(model=model, input=_input, truncate=truncate, options=options, keep_alive=keep_alive)
+
             if hasattr(async_gen, "model_dump_json"):
                 json_line = async_gen.model_dump_json()
             else:
                 json_line = json.dumps(async_gen)
             yield json_line.encode("utf-8") + b"\n"
+
         finally:
             # Ensure counter is decremented even if an exception occurs
             await decrement_usage(endpoint, model)
