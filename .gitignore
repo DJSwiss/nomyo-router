@@ -66,3 +66,6 @@ cython_debug/
 
 # Config
 config.yaml
+
+# Claude Code files
+Claude.md
