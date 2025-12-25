@@ -1036,6 +1036,135 @@ async def pull_proxy(request: Request, model: Optional[str] = None):
     return dict(final_status)
 
 # -------------------------------------------------------------
+# 14a. Helper function – Stream pull progress
+# -------------------------------------------------------------
+async def pull_model_stream(endpoint: str, model: str, insecure: bool, queue: asyncio.Queue):
+    """
+    Pull model auf einem Endpoint und sende Progress-Events zur Queue.
+    """
+    try:
+        await queue.put(json.dumps({
+            "type": "info",
+            "endpoint": endpoint,
+            "model": model,
+            "status": "starting",
+            "message": f"Starting pull on {endpoint}"
+        }))
+
+        client = ollama.AsyncClient(host=endpoint)
+        async for progress in await client.pull(model=model, insecure=insecure, stream=True):
+            await queue.put(json.dumps({
+                "type": "progress",
+                "endpoint": endpoint,
+                "model": model,
+                "completed": progress.get("completed"),
+                "total": progress.get("total"),
+                "digest": progress.get("digest"),
+                "status": progress.get("status", "downloading")
+            }))
+
+        await queue.put(json.dumps({
+            "type": "complete",
+            "endpoint": endpoint,
+            "model": model,
+            "status": "success",
+            "message": f"Successfully pulled {model}"
+        }))
+        return {"endpoint": endpoint, "status": "success"}
+
+    except Exception as e:
+        await queue.put(json.dumps({
+            "type": "error",
+            "endpoint": endpoint,
+            "model": model,
+            "status": "error",
+            "message": str(e)
+        }))
+        return {"endpoint": endpoint, "status": "error", "detail": str(e)}
+
+# -------------------------------------------------------------
+# 14b. API route – Pull Stream (with endpoint selection)
+# -------------------------------------------------------------
+@app.post("/api/pull-stream")
+async def pull_stream(request: Request):
+    """
+    Stream pull progress für ausgewählte Endpoints via SSE.
+    """
+    try:
+        body_bytes = await request.body()
+        payload = json.loads(body_bytes.decode("utf-8"))
+        model = payload.get("model")
+        endpoints = payload.get("endpoints")
+        insecure = payload.get("insecure", False)
+
+        if not model:
+            raise HTTPException(status_code=400, detail="Missing required field 'model'")
+
+        # Default: alle Ollama-Endpoints (OpenAI ausschließen)
+        if not endpoints:
+            endpoints = [ep for ep in config.endpoints if "/v1" not in ep]
+        else:
+            endpoints = [ep for ep in endpoints if ep in config.endpoints and "/v1" not in ep]
+
+        if not endpoints:
+            raise HTTPException(status_code=400, detail="No valid Ollama endpoints selected")
+
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}") from e
+
+    async def event_generator():
+        queue = asyncio.Queue(maxsize=100)
+
+        try:
+            tasks = [
+                pull_model_stream(endpoint, model, insecure, queue)
+                for endpoint in endpoints
+            ]
+
+            pending_count = len(tasks)
+            gather_task = asyncio.create_task(
+                asyncio.gather(*tasks, return_exceptions=True)
+            )
+
+            # Stream Events während Downloads laufen
+            while pending_count > 0:
+                if await request.is_disconnected():
+                    gather_task.cancel()
+                    break
+
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.5)
+                    yield f"data: {event}\n\n"
+
+                    event_data = json.loads(event)
+                    if event_data.get("type") in ["complete", "error"]:
+                        pending_count -= 1
+
+                except asyncio.TimeoutError:
+                    if gather_task.done():
+                        results = await gather_task
+                        break
+                    continue
+
+            if not gather_task.done():
+                results = await gather_task
+
+            # Final Summary
+            summary = {
+                "type": "done",
+                "model": model,
+                "endpoints": endpoints,
+                "results": [r for r in results if isinstance(r, dict)]
+            }
+            yield f"data: {json.dumps(summary)}\n\n"
+
+        except Exception as e:
+            error_event = {"type": "error", "message": f"Stream error: {str(e)}"}
+            yield f"data: {json.dumps(error_event)}\n\n"
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+# -------------------------------------------------------------
 # 15. API route – Push
 # -------------------------------------------------------------
 @app.post("/api/push")

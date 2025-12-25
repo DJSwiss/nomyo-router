@@ -69,3 +69,6 @@ config.yaml
 
 # Claude Code files
 Claude.md
+
+# Python directories
+.Python/
