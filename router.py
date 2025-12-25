@@ -8,7 +8,7 @@ license: AGPL
 # -------------------------------------------------------------
 import json, time, asyncio, yaml, ollama, openai, os, re, aiohttp, ssl, datetime, random
 from pathlib import Path
-from typing import Dict, Set, List, Optional
+from typing import Dict, Set, List, Optional, Union
 from fastapi import FastAPI, Request, HTTPException
 from fastapi_sse import sse_handler
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +18,16 @@ from pydantic import Field
 from pydantic_settings import BaseSettings
 from collections import defaultdict
 from dotenv import load_dotenv
+
+# HuggingFace integration (optional)
+try:
+    from huggingface_hub import InferenceClient, HfApi, ModelFilter
+    HF_AVAILABLE = True
+except ImportError:
+    HF_AVAILABLE = False
+    InferenceClient = None
+    HfApi = None
+    ModelFilter = None
 
 # Load environment variables from .env file
 load_dotenv()
@@ -49,8 +59,8 @@ app_state = {
 # 1. Configuration loader
 # -------------------------------------------------------------
 class Config(BaseSettings):
-    # List of Ollama endpoints
-    endpoints: list[str] = Field(
+    # List of endpoints (can be string or dict with provider field)
+    endpoints: list[Union[str, dict]] = Field(
         default_factory=lambda: [
             "http://localhost:11434",
         ]
@@ -59,6 +69,9 @@ class Config(BaseSettings):
     max_concurrent_connections: int = 1
 
     api_keys: Dict[str, str] = Field(default_factory=dict)
+
+    # Internal mapping for provider information
+    _endpoint_info: Dict[str, Dict[str, str]] = Field(default_factory=dict)
 
     class Config:
         # Load from `config.yaml` first, then from env variables
@@ -86,8 +99,40 @@ class Config(BaseSettings):
             with path.open("r", encoding="utf-8") as fp:
                 data = yaml.safe_load(fp) or {}
                 cleaned = cls._expand_env_refs(data)
-            return cls(**cleaned)
-        return cls()
+            config = cls(**cleaned)
+            config._normalize_endpoints()
+            return config
+        config = cls()
+        config._normalize_endpoints()
+        return config
+
+    def _normalize_endpoints(self):
+        """Convert mixed endpoint formats to internal representation."""
+        normalized = []
+        for ep in self.endpoints:
+            if isinstance(ep, str):
+                # Auto-detect from URL
+                provider = "openai" if "/v1" in ep else "ollama"
+                url = ep
+            elif isinstance(ep, dict):
+                url = ep.get("url")
+                provider = ep.get("provider", "auto")
+                if provider == "auto":
+                    provider = "openai" if "/v1" in url else "ollama"
+            else:
+                continue  # Skip invalid entries
+
+            normalized.append(url)
+            self._endpoint_info[url] = {
+                "provider": provider,
+                "url": url
+            }
+
+        self.endpoints = normalized
+
+    def get_provider(self, endpoint: str) -> str:
+        """Get provider type for an endpoint."""
+        return self._endpoint_info.get(endpoint, {}).get("provider", "ollama")
 
 # Create the global config object – it will be overwritten on startup
 config = Config()
@@ -159,12 +204,22 @@ class fetch:
                 # Error expired – remove it
                 del _error_cache[endpoint]
 
-        if "/v1" in endpoint:
+        provider = get_provider(endpoint)
+
+        if provider == "huggingface":
+            # HF Inference API - no global model list
+            # Models are checked at request time
+            return set()
+
+        elif provider in ["openai", "tgi"]:
+            # OpenAI-compatible endpoint (includes TGI)
             endpoint_url = f"{endpoint}/models"
             key = "data"
         else:
+            # Ollama endpoint
             endpoint_url = f"{endpoint}/api/tags"
             key = "models"
+
         client: aiohttp.ClientSession = app_state["session"]
         try:
             async with client.get(endpoint_url, headers=headers) as resp:
@@ -194,6 +249,12 @@ class fetch:
         loaded on that endpoint. If the request fails (e.g. timeout, 5xx), an empty
         set is returned.
         """
+        provider = get_provider(endpoint)
+
+        # Only Ollama supports /api/ps
+        if provider != "ollama":
+            return set()
+
         client: aiohttp.ClientSession = app_state["session"]
         try:
             async with client.get(f"{endpoint}/api/ps") as resp:
@@ -234,6 +295,10 @@ def ep2base(ep):
     else:
         base_url = ep+"/v1"
     return base_url
+
+def get_provider(endpoint: str) -> str:
+    """Get provider type for an endpoint."""
+    return config.get_provider(endpoint)
 
 def dedupe_on_keys(dicts, key_fields):
     """
@@ -360,7 +425,130 @@ class rechunk:
             eval_duration=None,
             embeddings=[chunk.data[0].embedding])
         return rechunk
-    
+
+    def hf_chat2ollama(chunk: dict, stream: bool, start_ts: float, model: str) -> ollama.ChatResponse:
+        """Convert HuggingFace text-generation to Ollama chat format."""
+        if stream:
+            # Streaming: {"token": {"text": "..."}, ...}
+            token_text = chunk.get("token", {}).get("text", "")
+            is_done = chunk.get("generated_text") is not None
+
+            return ollama.ChatResponse(
+                model=model,
+                created_at=iso8601_ns(),
+                done=is_done,
+                done_reason='stop' if is_done else None,
+                total_duration=int((time.perf_counter() - start_ts) * 1_000_000_000) if is_done else 0,
+                load_duration=100000,
+                prompt_eval_count=0,
+                prompt_eval_duration=0,
+                eval_count=0,
+                eval_duration=int((time.perf_counter() - start_ts) * 1_000_000_000) if is_done else 0,
+                message=ollama.Message(
+                    role="assistant",
+                    content=token_text,
+                    thinking=None,
+                    images=None,
+                    tool_name=None,
+                    tool_calls=None
+                )
+            )
+        else:
+            # Non-streaming: [{"generated_text": "..."}]
+            generated_text = chunk[0].get("generated_text", "") if chunk else ""
+
+            return ollama.ChatResponse(
+                model=model,
+                created_at=iso8601_ns(),
+                done=True,
+                done_reason='stop',
+                total_duration=int((time.perf_counter() - start_ts) * 1_000_000_000),
+                load_duration=100000,
+                prompt_eval_count=0,
+                prompt_eval_duration=0,
+                eval_count=0,
+                eval_duration=int((time.perf_counter() - start_ts) * 1_000_000_000),
+                message=ollama.Message(
+                    role="assistant",
+                    content=generated_text,
+                    thinking=None,
+                    images=None,
+                    tool_name=None,
+                    tool_calls=None
+                )
+            )
+
+    def hf_generate2ollama(chunk: dict, stream: bool, start_ts: float, model: str) -> ollama.GenerateResponse:
+        """Convert HuggingFace to Ollama generate format."""
+        if stream:
+            token_text = chunk.get("token", {}).get("text", "")
+            is_done = chunk.get("generated_text") is not None
+
+            return ollama.GenerateResponse(
+                model=model,
+                created_at=iso8601_ns(),
+                done=is_done,
+                done_reason='stop' if is_done else None,
+                total_duration=int((time.perf_counter() - start_ts) * 1000) if is_done else 0,
+                load_duration=10000,
+                prompt_eval_count=0,
+                prompt_eval_duration=0,
+                eval_count=0,
+                eval_duration=int((time.perf_counter() - start_ts) * 1000) if is_done else 0,
+                response=token_text,
+                thinking=None
+            )
+        else:
+            generated_text = chunk[0].get("generated_text", "") if chunk else ""
+
+            return ollama.GenerateResponse(
+                model=model,
+                created_at=iso8601_ns(),
+                done=True,
+                done_reason='stop',
+                total_duration=int((time.perf_counter() - start_ts) * 1000),
+                load_duration=10000,
+                prompt_eval_count=0,
+                prompt_eval_duration=0,
+                eval_count=0,
+                eval_duration=int((time.perf_counter() - start_ts) * 1000),
+                response=generated_text,
+                thinking=None
+            )
+
+    def hf_embeddings2ollama(embeddings: list, model: str) -> ollama.EmbedResponse:
+        """Convert HuggingFace embeddings to Ollama format."""
+        return ollama.EmbedResponse(
+            model=model,
+            created_at=iso8601_ns(),
+            done=True,
+            done_reason=None,
+            total_duration=None,
+            load_duration=None,
+            prompt_eval_count=None,
+            prompt_eval_duration=None,
+            eval_count=None,
+            eval_duration=None,
+            embeddings=[embeddings]
+        )
+
+def messages_to_prompt(messages: list) -> str:
+    """Convert Ollama/OpenAI messages to plain prompt for HF."""
+    prompt_parts = []
+    for msg in messages:
+        role = msg.get("role", "user")
+        content = msg.get("content", "")
+
+        if role == "system":
+            prompt_parts.append(f"System: {content}")
+        elif role == "user":
+            prompt_parts.append(f"User: {content}")
+        elif role == "assistant":
+            prompt_parts.append(f"Assistant: {content}")
+
+    prompt_parts.append("Assistant:")
+    return "\n\n".join(prompt_parts)
+
 # ------------------------------------------------------------------
 # SSE Helpser
 # ------------------------------------------------------------------
@@ -630,15 +818,47 @@ async def chat_proxy(request: Request):
 
     # 2. Endpoint logic
     endpoint = await choose_endpoint(model)
-    is_openai_endpoint = "/v1" in endpoint
-    if is_openai_endpoint:
-        if ":latest" in model:
-            model = model.split(":latest")
-            model = model[0]
+    provider = get_provider(endpoint)
+
+    hf_client = None
+    oclient = None
+    client = None
+
+    if provider == "huggingface":
+        if not HF_AVAILABLE:
+            raise HTTPException(status_code=500, detail="HuggingFace support not available. Install huggingface_hub.")
+
+        # HuggingFace Inference API
+        api_key = config.api_keys.get(endpoint, "")
+        hf_client = InferenceClient(token=api_key)
+
+        # Convert messages to prompt
+        prompt = messages_to_prompt(messages)
+
         params = {
-            "messages": messages, 
+            "model": model,  # Format: "org/model-name"
+            "prompt": prompt,
+            "stream": stream if stream is not None else False,
+        }
+
+        # Optional parameters
+        if options:
+            if "temperature" in options:
+                params["temperature"] = options["temperature"]
+            if "num_predict" in options:
+                params["max_new_tokens"] = options["num_predict"]
+            if "top_p" in options:
+                params["top_p"] = options["top_p"]
+
+    elif provider in ["openai", "tgi"]:
+        # OpenAI-compatible (includes TGI)
+        if ":latest" in model:
+            model = model.split(":latest")[0]
+
+        params = {
+            "messages": messages,
             "model": model,
-            }
+        }
         optional_params = {
             "tools": tools,
             "stream": stream,
@@ -651,42 +871,51 @@ async def chat_proxy(request: Request):
             "top_p": options.get("top_p") if options and "top_p" in options else None,
             "temperature": options.get("temperature") if options and "temperature" in options else None,
             "response_format": {"type": "json_schema", "json_schema": _format} if _format is not None else None
-            }
+        }
         params.update({k: v for k, v in optional_params.items() if v is not None})
         oclient = openai.AsyncOpenAI(base_url=endpoint, default_headers=default_headers, api_key=config.api_keys[endpoint])
-    else:
+
+    else:  # ollama
         client = ollama.AsyncClient(host=endpoint)
+
     await increment_usage(endpoint, model)
     # 3. Async generator that streams chat data and decrements the counter
     async def stream_chat_response():
         try:
-            # The chat method returns a generator of dicts (or GenerateResponse)
-            if is_openai_endpoint:
+            # Initialize async generator based on provider
+            if provider == "huggingface":
+                start_ts = time.perf_counter()
+                async_gen = hf_client.text_generation(**params, details=True)
+            elif provider in ["openai", "tgi"]:
                 start_ts = time.perf_counter()
                 async_gen = await oclient.chat.completions.create(**params)
-            else:
+            else:  # ollama
                 async_gen = await client.chat(model=model, messages=messages, tools=tools, stream=stream, think=think, format=_format, options=options, keep_alive=keep_alive)
-            if stream == True:
+
+            if stream:
                 async for chunk in async_gen:
-                    if is_openai_endpoint:
+                    if provider == "huggingface":
+                        chunk = rechunk.hf_chat2ollama(chunk, stream, start_ts, model)
+                    elif provider in ["openai", "tgi"]:
                         chunk = rechunk.openai_chat_completion2ollama(chunk, stream, start_ts)
-                    # `chunk` can be a dict or a pydantic model – dump to JSON safely
+
+                    # Convert chunk to JSON
                     if hasattr(chunk, "model_dump_json"):
                         json_line = chunk.model_dump_json()
                     else:
                         json_line = json.dumps(chunk)
                     yield json_line.encode("utf-8") + b"\n"
             else:
-                if is_openai_endpoint:
+                # Non-streaming response
+                if provider == "huggingface":
+                    response = rechunk.hf_chat2ollama(async_gen, stream, start_ts, model)
+                    json_line = response.model_dump_json()
+                elif provider in ["openai", "tgi"]:
                     response = rechunk.openai_chat_completion2ollama(async_gen, stream, start_ts)
-                    response = response.model_dump_json()
-                else:
-                    response = async_gen.model_dump_json()
-                json_line = (
-                    response
-                    if hasattr(async_gen, "model_dump_json")
-                    else json.dumps(async_gen)
-                )
+                    json_line = response.model_dump_json()
+                else:  # ollama
+                    json_line = async_gen.model_dump_json()
+
                 yield json_line.encode("utf-8") + b"\n"
 
         finally:
